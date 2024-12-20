@@ -5,7 +5,7 @@ Privacy accountants for differential privacy.
 
 import math
 from dataclasses import dataclass
-from typing import Callable, Optional, TypeVar
+from typing import Callable, List, Optional, Tuple, TypeVar
 
 from dp_accounting import dp_event
 from dp_accounting.pld import privacy_loss_distribution
@@ -57,6 +57,7 @@ class PrivacyAccountant:
     delta: Optional[float] = None
     noise_parameter: Optional[float] = None
     noise_scale: float = 1.0
+    joint_mechanisms: Optional[Tuple[List, List]] = None
 
     def __post_init__(self):
         assert [
@@ -143,8 +144,17 @@ class PLDPrivacyAccountant(PrivacyAccountant):
         super().__post_init__()
 
         assert self.mechanism in [
-            'gaussian', 'laplace'
+            'gaussian', 'laplace', 'joint'
         ], ('Only gaussian and laplace mechanisms are supported.')
+
+        if self.mechanism == 'joint':
+            mechanism_names, budget_proportions = self.joint_mechanisms
+            assert set(mechanism_names).issubset({'gaussian', 'laplace'}), \
+                ('Only gaussian and laplace mechanisms are supported.')
+
+            assert math.isclose(sum(budget_proportions), 1, rel_tol=1e-3), (
+                'Privacy budget proportions must sum to 1.'
+            )
 
         # Epsilon, delta, noise parameter all defined. Nothing to do.
         if [self.epsilon, self.delta, self.noise_parameter].count(None) == 0:
@@ -153,7 +163,7 @@ class PLDPrivacyAccountant(PrivacyAccountant):
                     self.mechanism, self.noise_parameter,
                     self.pessimistic_estimate, self.sampling_probability,
                     self.use_connect_dots, self.value_discretization_interval,
-                    self.num_compositions).get_delta_for_epsilon(self.epsilon),
+                    self.num_compositions, self.joint_mechanisms).get_delta_for_epsilon(self.epsilon),
                 self.delta,
                 rel_tol=1e-3), (
                     'Invalid settings of epsilon, delta, noise_parameter for '
@@ -168,7 +178,7 @@ class PLDPrivacyAccountant(PrivacyAccountant):
                     self.mechanism, self.noise_parameter,
                     self.pessimistic_estimate, self.sampling_probability,
                     self.use_connect_dots, self.value_discretization_interval,
-                    self.num_compositions)
+                    self.num_compositions, self.joint_mechanisms)
 
                 if self.epsilon:
                     self.delta = composed_pld.get_delta_for_epsilon(
@@ -182,7 +192,8 @@ class PLDPrivacyAccountant(PrivacyAccountant):
                 func = lambda noise_parameter: self.get_composed_accountant(
                     self.mechanism, noise_parameter, self.pessimistic_estimate,
                     self.sampling_probability, self.use_connect_dots, self.
-                    value_discretization_interval, self.num_compositions
+                    value_discretization_interval, self.num_compositions,
+                    self.joint_mechanisms
                 ).get_delta_for_epsilon(self.epsilon)
                 func_monotonically_increasing = False
                 try:
@@ -207,7 +218,8 @@ class PLDPrivacyAccountant(PrivacyAccountant):
                                 pessimistic_estimate, sampling_probability,
                                 use_connect_dots,
                                 value_discretization_interval,
-                                num_compositions):
+                                num_compositions,
+                                joint_mechanisms):
 
         if mechanism == 'gaussian':
             pld = privacy_loss_distribution.from_gaussian_mechanism(
@@ -225,6 +237,23 @@ class PLDPrivacyAccountant(PrivacyAccountant):
                 sampling_prob=sampling_probability,
                 use_connect_dots=use_connect_dots,
                 value_discretization_interval=value_discretization_interval)
+        elif mechanism == 'joint':
+            mechanism_names, budget_proportions = joint_mechanisms
+            plds = []
+            for mechanism_name, p in zip(mechanism_names, budget_proportions):
+                plds.append(PLDPrivacyAccountant.get_composed_accountant(
+                    mechanism_name, noise_parameter / p,
+                    pessimistic_estimate, sampling_probability,
+                    use_connect_dots,
+                    value_discretization_interval,
+                    1,
+                    None
+                ))
+
+            pld = plds[0]
+            for next_pld in plds[1:]:
+                pld = pld.compose(next_pld)
+
         else:
             raise ValueError(f'mechanism {mechanism} is not supported.')
 
